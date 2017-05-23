@@ -5,10 +5,10 @@ import logging
 import pytz
 import requests
 from django.core.urlresolvers import reverse
-from django.contrib.auth.hashers import PBKDF2PasswordHasher
-from .utils import SymmetricEncryption
+from .utils import SymmetricEncryption, JsonApi, EncryptionApi
 
 log = logging.getLogger(__name__)
+
 
 class Block(models.Model):
     time_stamp = models.DateTimeField(auto_now_add=False)
@@ -17,7 +17,7 @@ class Block(models.Model):
     hash = models.CharField(max_length=255)
     previous_hash = models.CharField(max_length=255)
     chain = models.ForeignKey(to='Chain')
-    salt = models.CharField(max_length=255, default='')
+    nonce = models.CharField(max_length=255, default='')
 
     def __repr__(self):
         return '{}: {}'.format(self.index, str(self.hash)[:6])
@@ -29,7 +29,7 @@ class Block(models.Model):
                 self.index,
                 self.data,
                 self.previous_hash,
-                self.salt).encode('utf-8'))\
+                self.nonce).encode('utf-8'))\
             .hexdigest()
 
     @staticmethod
@@ -42,7 +42,7 @@ class Block(models.Model):
             salt=SymmetricEncryption.generate_salt(26)
         )
         while not block.valid_hash():
-            block.salt = SymmetricEncryption.generate_salt(26)
+            block.nonce = SymmetricEncryption.generate_salt(26)
 
         block.hash = block.__hash__()
         return block
@@ -63,10 +63,15 @@ class Block(models.Model):
         return True
 
     def valid_hash(self):
+        """simulate Proof of work"""
         return self.__hash__()[:5] == '00000'
 
 
 class Chain(models.Model):
+    """this entity is not entire required as a persistent model
+
+        - in this implementation, a node can serve & manage multiple blockchains
+    """
     time_stamp = models.DateTimeField(auto_now_add=True)
     name = models.CharField(max_length=255)
 
@@ -119,54 +124,12 @@ class Chain(models.Model):
         return all(block.is_valid_block(pblock)
                    for pblock, block in zip(blocks[:-1], blocks[1:]))
 
-
     def replace_chain(self, new_chain):
         if self.is_valid_chain(new_chain) and len(new_chain) > len(self):
             self.block_set.all().delete()
             for block in new_chain:
                 block.chain = self
                 block.save()
-
-
-class JsonApi(object):
-
-    @classmethod
-    def get(cls, base_url, api_url):
-        url = '{}{}'.format(base_url, api_url)
-        data = {}
-        response = None
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as exc:
-            log.warning('GET failed: {} - {}'.format(url, exc))
-            if response is not None and hasattr(response, 'content'):
-                log.warning('RESPONSE {}'.format(response.content))
-        finally:
-            return data
-
-    @classmethod
-    def post(cls, base_url, api_url, data):
-        url = '{}{}'.format(base_url, api_url)
-        response_data = {}
-        response = None
-        try:
-            response = requests.post(url, json=data)
-            response.raise_for_status()
-            if response.status_code == 201:
-                log.info('Peer {} accepted block.'.format(base_url))
-            if not len(response.content):
-                if response.status_code == 304:
-                    log.warning('Peer {}: unable to accept block.'.format(base_url))
-            else:
-                response_data = response.json()
-        except Exception as exc:
-            log.warning('POST failed: {} - {}'.format(url, exc))
-            if response is not None and hasattr(response, 'content'):
-                log.warning('RESPONSE {}'.format(response.content))
-        finally:
-            return response_data
 
 
 class Peer(models.Model):
@@ -272,30 +235,4 @@ class Peer(models.Model):
                 peer.save()
 
         return known_peers
-
-
-class EncryptionApi(object):
-
-    @staticmethod
-    def make_password(raw_password, salt):
-        """10000 iterations of pbkdf2 and return only hash"""
-        hasher = PBKDF2PasswordHasher()
-        hashed_password = hasher.encode(raw_password, salt)
-        return hashed_password.split('$').pop()
-
-    @classmethod
-    def encrypt(cls, raw_password, data):
-        salt = SymmetricEncryption.generate_salt()
-        password = cls.make_password(raw_password, salt)
-        encryption_key = SymmetricEncryption.build_encryption_key(password)
-        e_data = SymmetricEncryption.encrypt(encryption_key, data)
-        return '{}${}'.format(salt, e_data.decode('utf-8'))
-
-    @classmethod
-    def decrypt(cls, raw_password, stored_data):
-        salt, e_data = stored_data.split('$')
-        password = cls.make_password(raw_password, salt)
-        encryption_key = SymmetricEncryption.build_encryption_key(password)
-        data = SymmetricEncryption.decrypt(encryption_key, e_data.encode('utf-8'))
-        return data.decode('utf-8')
 

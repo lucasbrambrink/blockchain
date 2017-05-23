@@ -1,3 +1,3 @@
 from django.shortcuts import render
 
-# Create your views here.
+# check api.v0.views for JSON api
