@@ -68,9 +68,8 @@ class Block(models.Model):
 
 
 class Chain(models.Model):
-    """this entity is not entire required as a persistent model
-
-        - in this implementation, a node can serve & manage multiple blockchains
+    """
+    allows for multiple blockchain entities to exist simultaneously
     """
     time_stamp = models.DateTimeField(auto_now_add=True)
     name = models.CharField(max_length=255)
